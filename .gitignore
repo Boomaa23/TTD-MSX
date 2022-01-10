@@ -1,0 +1,4 @@
+.vscode/*
+openmsx/*.mid
+*.exe
+*.obj
