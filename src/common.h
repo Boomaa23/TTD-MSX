@@ -11,6 +11,7 @@ enum class Result {
 
     FOPEN_ERR,
     FREAD_ERR,
+    FSEEK_ERR,
     FCLOSE_ERR,
     MEMCMP_ERR,
     FILE_NOT_INIT,

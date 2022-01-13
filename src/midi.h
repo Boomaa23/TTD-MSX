@@ -6,6 +6,12 @@ struct MidiHeader {
     uint16_t tickdiv;
 };
 
+struct TrackEvent {
+    uint32_t deltaTime;
+    uint8_t* data;
+    uint8_t len;
+};
+
 class MidiFile {
 public:
     MidiFile(std::string filename);
@@ -17,31 +23,44 @@ public:
     Result CloseFile();
 
     MidiHeader* GetHeader();
-    std::vector<DWORD>* GetChunks();
+    std::vector<TrackEvent>* GetChunks();
 
 private:
     std::string filename;
     FILE* file;
     MidiHeader* header;
-    std::vector<DWORD> chunks;
+    std::vector<TrackEvent> chunks;
 };
 
-class MidiStream {
+class MidiDevice {
 public:
-    MidiStream();
-    ~MidiStream();
+    MidiDevice();
+    ~MidiDevice();
 
     Result Open();
-    Result SetTimeDiv(DWORD timeDiv);
-    Result Queue(std::vector<DWORD>* data);
+    Result Queue(std::vector<TrackEvent>* data);
     Result Start();
+    Result Reset();
     Result Close();
 
-    uint32_t GetDeviceID();
-    HMIDISTRM* GetStream();
+    uint32_t GetID();
+    HMIDIOUT* GetDevice();
 
 private:
-    uint32_t device;
-    HMIDISTRM stream;
-    MIDIHDR header;
+    UINT id;
+    HMIDIOUT device;
+    std::vector<TrackEvent> queue;
 };
+
+uint32_t ReadVariableLen(FILE* file) {
+    uint8_t byte = getc(file);
+    uint32_t data = byte & 0x7fu;
+
+	if (byte & 0x80u) {
+		do {
+			data <<= 7u;
+			data |= (byte = getc(file)) & 0x7fu;
+		} while (byte & 0x80u);
+	}
+    return data;
+}

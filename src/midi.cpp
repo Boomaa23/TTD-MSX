@@ -59,15 +59,66 @@ Result MidiFile::ReadChunk() {
         return Result::MEMCMP_ERR;
     }
 
-    // DWORD chunk;
-    // if (fread(&chunk, 4, 1, this->file) != 1) {
-    // 	return Result::FREAD_ERR;
-    // }
+    uint32_t length;
+    if (fread(&length, 4, 1, this->file) != 1) {
+    	return Result::FREAD_ERR;
+    }
 
-    // if (fread(&chunk.data, 1, chunk.size, this->file) != 1) {
-    // 	return Result::FREAD_ERR;
-    // }
-    // this->chunks.push_back(chunk);
+    uint32_t i = 0;
+    while (i < length) {
+        TrackEvent event;
+        event.deltaTime = ReadVariableLen(this->file);
+        uint8_t status = getc(this->file);
+
+        switch (status) {
+            case 0xF0:
+            case 0xF7:
+                // sysex event
+                event.len = getc(this->file);
+                event.data = new uint8_t[event.len];
+                for (uint8_t i = 0; i < event.len; ++i) {
+                    event.data[i] = getc(this->file);
+                }
+                break;
+            case 0xFF:
+                // meta event
+                if (!fseek(this->file, 1, SEEK_CUR)) {
+                    return Result::FSEEK_ERR;
+                }
+                event.len = getc(this->file);
+                event.data = new uint8_t[event.len];
+                for (uint8_t i = 0; i < event.len; ++i) {
+                    event.data[i] = getc(this->file);
+                }
+                break;
+            default:
+                // midi message
+                switch (status & 0xF0) {
+                    case 0xC0:
+                    case 0xD0:
+                        event.len = 1;
+                        event.data = new uint8_t[2] {
+                            status,
+                            (uint8_t) getc(this->file)
+                        };
+                        break;
+                    case 0x80:
+                    case 0x90:
+                    case 0xA0:
+                    case 0xB0:
+                    case 0xE0:
+                        event.len = 1;
+                        event.data = new uint8_t[3] {
+                            status,
+                            (uint8_t) getc(this->file),
+                            (uint8_t) getc(this->file)
+                        };
+                        break;
+                }
+                break;
+        }
+        this->chunks.push_back(event);
+    }
     return Result::SUCCESS;
 }
 
@@ -87,99 +138,83 @@ MidiHeader* MidiFile::GetHeader() {
     return this->header;
 }
 
-std::vector<DWORD>* MidiFile::GetChunks() {
+std::vector<TrackEvent>* MidiFile::GetChunks() {
     return &this->chunks;
 }
 
 
-/** STREAM **/
-MidiStream::MidiStream() {
-    this->device = 0;
+/** DEVICE **/
+MidiDevice::MidiDevice() {
+    this->id = 0;
+    this->device = NULL;
 }
 
-MidiStream::~MidiStream() {
-    if (this->stream) {
+MidiDevice::~MidiDevice() {
+    if (this->device) {
         Close();
     }
 }
 
-Result MidiStream::Open() {
-    if (midiStreamOpen(&this->stream, &this->device, 1, (DWORD) this, NULL, CALLBACK_NULL) != MMSYSERR_NOERROR) {
+Result MidiDevice::Open() {
+    if (midiOutOpen(&this->device, this->id, 0, 0, CALLBACK_NULL) != MMSYSERR_NOERROR) {
         return Result::MIDI_OPEN_ERR;
     }
     return Result::SUCCESS;
 }
 
-Result MidiStream::SetTimeDiv(DWORD timeDiv) {
-    if (!this->stream) {
+Result MidiDevice::Queue(std::vector<TrackEvent>* data) {
+    if (!this->device) {
         return Result::MIDI_NOT_INIT;
     }
-    
-    MIDIPROPTIMEDIV tdProp;
-    tdProp.dwTimeDiv = timeDiv;
-    tdProp.cbStruct = sizeof(MIDIPROPTIMEDIV);
-    if (midiStreamProperty(this->stream, (LPBYTE) &tdProp, MIDIPROP_SET | MIDIPROP_TIMEDIV) != MMSYSERR_NOERROR) {
-        return Result::MIDI_PROP_ERR;
+    this->queue.insert(this->queue.end(), data->begin(), data->end());
+    return Result::SUCCESS;
+}
+
+Result MidiDevice::Start() {
+    for (size_t i = 0; i < this->queue.size(); i++) {
+        TrackEvent* event = &this->queue.at(i);
+        if (event->data.size() == 2 || event->data.size() == 3) {
+            DWORD data = event->data.at(0) | (event->data.at(1) << 8);
+            if (event->data.size() == 3) {
+                data |= event->data.at(2) << 16;
+            }
+            if (midiOutShortMsg(this->device, data) != MMSYSERR_NOERROR) {
+                return Result::MIDI_OUT_ERR;
+            }
+        } else {
+            // long msg playback
+        }
     }
     return Result::SUCCESS;
 }
 
-Result MidiStream::Queue(std::vector<DWORD>* data) {
-    if (!this->stream) {
+Result MidiDevice::Reset() {
+    if (!this->device) {
         return Result::MIDI_NOT_INIT;
     }
-
-    MIDIEVENT* messages;
-    size_t dataSize = data->size();
-    messages = new MIDIEVENT[dataSize];
-    for (size_t i = 0; i < dataSize; i++) {
-        messages[i].dwStreamID = 0;
-        messages[i].dwEvent = data->at(i);
-    }
-
-    this->header.lpData = (LPSTR) &messages;
-    this->header.dwBufferLength = this->header.dwBytesRecorded = (sizeof(MIDIEVENT) - sizeof(DWORD)) * dataSize;
-    this->header.dwFlags = 0;
-
-    if (midiOutPrepareHeader((HMIDIOUT) this->stream, &this->header, sizeof(MIDIHDR)) != MMSYSERR_NOERROR) {
-        return Result::MIDI_HEAD_ERR;
-    }
-
-    if (midiStreamOut(this->stream, &this->header, sizeof(MIDIHDR)) != MMSYSERR_NOERROR) {
-        midiOutUnprepareHeader((HMIDIOUT) this->stream, &this->header, sizeof(MIDIHDR));
-        return Result::MIDI_OUT_ERR;
-    }
-    return Result::SUCCESS;
-}
-
-Result MidiStream::Start() {
-    if (midiStreamRestart(this->stream) != MMSYSERR_NOERROR) {
-        return Result::MIDI_START_ERR;
-    }
-    return Result::SUCCESS;
-}
-
-Result MidiStream::Close() {
-    if (!this->stream) {
-        return Result::MIDI_NOT_INIT;
-    }
-    if (midiOutUnprepareHeader((HMIDIOUT) this->stream, &this->header, sizeof(MIDIHDR)) != MMSYSERR_NOERROR) {
-        return Result::MIDI_CLOSE_ERR;
-    }
-    if (midiStreamStop(this->stream) != MMSYSERR_NOERROR) {
-        return Result::MIDI_CLOSE_ERR;
-    }
-    if (midiStreamClose(this->stream) != MMSYSERR_NOERROR) {
+    if (midiOutReset(this->device) != MMSYSERR_NOERROR) {
         return Result::MIDI_CLOSE_ERR;
     }
     
     return Result::SUCCESS;
 }
 
-uint32_t MidiStream::GetDeviceID() {
-    return this->device;
+
+Result MidiDevice::Close() {
+    if (!this->device) {
+        return Result::MIDI_NOT_INIT;
+    }
+    if (midiOutClose(this->device) != MMSYSERR_NOERROR) {
+        return Result::MIDI_CLOSE_ERR;
+    }
+    
+    return Result::SUCCESS;
 }
 
-HMIDISTRM* MidiStream::GetStream() {
-    return &this->stream;
+UINT MidiDevice::GetID() {
+    return this->id;
+}
+
+HMIDIOUT* MidiDevice::GetDevice() {
+    return &this->device;
 }
