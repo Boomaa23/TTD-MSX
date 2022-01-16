@@ -12,13 +12,13 @@ VarLen ReadVariableLen(FILE* file) {
     out.data = byte & 0x7fu;
     out.len = 1;
 
-	if (byte & 0x80u) {
-		do {
-			out.data <<= 7u;
-			out.data |= (byte = getc(file)) & 0x7fu;
+    if (byte & 0x80u) {
+        do {
+            out.data <<= 7u;
+            out.data |= (byte = getc(file)) & 0x7fu;
             out.len++;
-		} while (byte & 0x80u);
-	}
+        } while (byte & 0x80u);
+    }
     return out;
 }
 
