@@ -1,13 +1,30 @@
 #include "common.h"
 
+#define Track std::vector<TrackEvent>
+
+struct VarLen {
+    uint32_t data;
+    uint32_t len;
+};
+
 struct MidiHeader {
     uint16_t format;
     uint16_t tracks;
     uint16_t tickdiv;
 };
 
+enum EventType {
+    MIDI,
+    META,
+    SYSEX
+};
+
 struct TrackEvent {
+    uint8_t track;
+    uint32_t trackTime;
     uint32_t deltaTime;
+
+    EventType type;
     uint8_t* data;
     uint8_t len;
 };
@@ -19,17 +36,18 @@ public:
 
     Result OpenFile();
     Result ReadHeader();
-    Result ReadChunk();
+    Result ReadTracks();
+    Result SortTracks();
     Result CloseFile();
 
     MidiHeader* GetHeader();
-    std::vector<TrackEvent>* GetChunks();
+    std::vector<Track>* GetTracks();
 
 private:
     std::string filename;
     FILE* file;
     MidiHeader* header;
-    std::vector<TrackEvent> chunks;
+    std::vector<Track> tracks;
 };
 
 class MidiDevice {
@@ -38,8 +56,8 @@ public:
     ~MidiDevice();
 
     Result Open();
-    Result Queue(std::vector<TrackEvent>* data);
-    Result Start();
+    Result Queue(std::vector<Track>* data);
+    Result Start(uint16_t tickdiv);
     Result Reset();
     Result Close();
 
@@ -51,16 +69,3 @@ private:
     HMIDIOUT device;
     std::vector<TrackEvent> queue;
 };
-
-uint32_t ReadVariableLen(FILE* file) {
-    uint8_t byte = getc(file);
-    uint32_t data = byte & 0x7fu;
-
-	if (byte & 0x80u) {
-		do {
-			data <<= 7u;
-			data |= (byte = getc(file)) & 0x7fu;
-		} while (byte & 0x80u);
-	}
-    return data;
-}

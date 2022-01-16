@@ -2,6 +2,7 @@
 
 #include <iostream>
 #include <vector>
+#include <algorithm>
 #include <string>
 #include <windows.h> // MUST GO BEFORE MMSYSTEM
 #include <mmsystem.h>

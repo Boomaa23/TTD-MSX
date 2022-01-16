@@ -1,6 +1,27 @@
 #include "common.h"
 #include "midi.h"
 
+uint32_t swap_uint32(uint32_t val) {
+    val = ((val << 8) & 0xFF00FF00 ) | ((val >> 8) & 0xFF00FF); 
+    return (val << 16) | (val >> 16);
+}
+
+VarLen ReadVariableLen(FILE* file) {
+    uint8_t byte = getc(file);
+    VarLen out;
+    out.data = byte & 0x7fu;
+    out.len = 1;
+
+	if (byte & 0x80u) {
+		do {
+			out.data <<= 7u;
+			out.data |= (byte = getc(file)) & 0x7fu;
+            out.len++;
+		} while (byte & 0x80u);
+	}
+    return out;
+}
+
 
 /** FILE **/
 MidiFile::MidiFile(std::string filename) {
@@ -17,7 +38,6 @@ Result MidiFile::OpenFile() {
     if (!(this->file = fopen(filename.c_str(), "rb"))) {
         return Result::FOPEN_ERR;
     }
-    std::cout << file << std::endl;
     this->header = new MidiHeader();
     return Result::SUCCESS;
 }
@@ -45,79 +65,113 @@ Result MidiFile::ReadHeader() {
     return Result::SUCCESS;
 }
 
-Result MidiFile::ReadChunk() {
+Result MidiFile::ReadTracks() {
     if (!this->file) {
         return Result::FILE_NOT_INIT;
     }
 
-    uint8_t buf[4];
-    const uint8_t magic[] = { 'M', 'T', 'r', 'k' };
-    if (fread(buf, sizeof(magic), 1, file) != 1) {
-        return Result::FREAD_ERR;
-    }
-    if (memcmp(magic, buf, sizeof(magic)) != 0) {
-        return Result::MEMCMP_ERR;
-    }
-
-    uint32_t length;
-    if (fread(&length, 4, 1, this->file) != 1) {
-    	return Result::FREAD_ERR;
-    }
-
-    uint32_t i = 0;
-    while (i < length) {
-        TrackEvent event;
-        event.deltaTime = ReadVariableLen(this->file);
-        uint8_t status = getc(this->file);
-
-        switch (status) {
-            case 0xF0:
-            case 0xF7:
-                // sysex event
-                event.len = getc(this->file);
-                event.data = new uint8_t[event.len];
-                for (uint8_t i = 0; i < event.len; ++i) {
-                    event.data[i] = getc(this->file);
-                }
-                break;
-            case 0xFF:
-                // meta event
-                if (!fseek(this->file, 1, SEEK_CUR)) {
-                    return Result::FSEEK_ERR;
-                }
-                event.len = getc(this->file);
-                event.data = new uint8_t[event.len];
-                for (uint8_t i = 0; i < event.len; ++i) {
-                    event.data[i] = getc(this->file);
-                }
-                break;
-            default:
-                // midi message
-                switch (status & 0xF0) {
-                    case 0xC0:
-                    case 0xD0:
-                        event.len = 1;
-                        event.data = new uint8_t[2] {
-                            status,
-                            (uint8_t) getc(this->file)
-                        };
-                        break;
-                    case 0x80:
-                    case 0x90:
-                    case 0xA0:
-                    case 0xB0:
-                    case 0xE0:
-                        event.len = 1;
-                        event.data = new uint8_t[3] {
-                            status,
-                            (uint8_t) getc(this->file),
-                            (uint8_t) getc(this->file)
-                        };
-                        break;
-                }
-                break;
+    while (true) {
+        uint8_t buf[4];
+        const uint8_t magic[] = { 'M', 'T', 'r', 'k' };
+        uint8_t retVal = fread(buf, sizeof(magic), 1, file);
+        if (retVal == EOF || retVal == 0) {
+            // File is done reading, reached EOF
+            return Result::SUCCESS;
+        } else if (retVal != 1) {
+            return Result::FREAD_ERR;
         }
-        this->chunks.push_back(event);
+        if (memcmp(magic, buf, sizeof(magic)) != 0) {
+            return Result::MEMCMP_ERR;
+        }
+
+        uint32_t trackLength;
+        if (fread(&trackLength, 4, 1, this->file) != 1) {
+            return Result::FREAD_ERR;
+        }
+        trackLength = swap_uint32(trackLength);
+
+        Track track;
+        uint32_t i = 0;
+        uint32_t currTime = 0;
+        uint8_t lastStatus = 0;
+        while (i < trackLength) {
+            TrackEvent event;
+            VarLen deltaTime = ReadVariableLen(this->file);
+            event.deltaTime = deltaTime.data;
+            event.trackTime = currTime + deltaTime.data;
+            currTime += deltaTime.data;
+            i += deltaTime.len;
+            
+            uint8_t status = getc(this->file);
+            if (status & 0x80) {
+                lastStatus = status;
+                i++;
+            } else {
+                status = lastStatus;
+                fseek(this->file, -1, SEEK_CUR);
+            }
+
+            switch (status) {
+                case 0xF0:
+                case 0xF7: {
+                    // sysex event
+                    //TODO THIS DOES NOT WORK
+                    event.type = EventType::SYSEX;
+                    event.len = getc(this->file);
+                    event.data = new uint8_t[event.len];
+                    for (uint8_t i = 0; i < event.len; ++i) {
+                        event.data[i] = getc(this->file);
+                    }
+                    i += event.len;
+                    break;
+                }
+                case 0xFF: {
+                    // meta event
+                    event.type = EventType::META;
+                    uint8_t metaType = getc(this->file);
+                    VarLen metaLen = ReadVariableLen(this->file);
+                    event.len = metaLen.data;
+                    event.data = new uint8_t[event.len + 1];
+                    event.data[0] = metaType;
+                    for (uint8_t i = 0; i < event.len; ++i) {
+                        event.data[i + 1] = getc(this->file);
+                    }
+                    i += event.len + metaLen.len + 1;
+                    break;
+                }
+                default: {
+                    // midi message
+                    event.type = EventType::MIDI;
+                    switch (status & 0xF0) {
+                        case 0xC0:
+                        case 0xD0:
+                            event.len = 2;
+                            event.data = new uint8_t[2] {
+                                status,
+                                (uint8_t) getc(this->file)
+                            };
+                            i += 1;
+                            break;
+                        case 0x80:
+                        case 0x90:
+                        case 0xA0:
+                        case 0xB0:
+                        case 0xE0:
+                            event.len = 3;
+                            event.data = new uint8_t[3] {
+                                status,
+                                (uint8_t) getc(this->file),
+                                (uint8_t) getc(this->file)
+                            };
+                            i += 2;
+                            break;
+                    }
+                    break;
+                }
+            }
+            track.push_back(event);
+        }
+        this->tracks.push_back(track);
     }
     return Result::SUCCESS;
 }
@@ -138,8 +192,8 @@ MidiHeader* MidiFile::GetHeader() {
     return this->header;
 }
 
-std::vector<TrackEvent>* MidiFile::GetChunks() {
-    return &this->chunks;
+std::vector<Track>* MidiFile::GetTracks() {
+    return &this->tracks;
 }
 
 
@@ -162,28 +216,51 @@ Result MidiDevice::Open() {
     return Result::SUCCESS;
 }
 
-Result MidiDevice::Queue(std::vector<TrackEvent>* data) {
+bool TracktimeAsc(TrackEvent &a, TrackEvent &b) {
+    return a.trackTime < b.trackTime;
+}
+
+Result MidiDevice::Queue(std::vector<Track>* data) {
     if (!this->device) {
         return Result::MIDI_NOT_INIT;
     }
-    this->queue.insert(this->queue.end(), data->begin(), data->end());
+    for (size_t i = 0; i < data->size(); i++) {
+        this->queue.insert(this->queue.end(), data->at(i).begin(), data->at(i).end());
+    }
+    std::sort(this->queue.begin(), this->queue.end(), TracktimeAsc);
     return Result::SUCCESS;
 }
 
-Result MidiDevice::Start() {
+Result MidiDevice::Start(uint16_t tickdiv) {
+    TrackEvent* lastEvent = NULL;
+    uint32_t tempo = 500000;
     for (size_t i = 0; i < this->queue.size(); i++) {
         TrackEvent* event = &this->queue.at(i);
-        if (event->data.size() == 2 || event->data.size() == 3) {
-            DWORD data = event->data.at(0) | (event->data.at(1) << 8);
-            if (event->data.size() == 3) {
-                data |= event->data.at(2) << 16;
+        if (event->type == EventType::MIDI) {
+            if (lastEvent != NULL) {
+                uint32_t deltaTime = event->trackTime - lastEvent->trackTime;
+                if (deltaTime != 0) {
+                    double speedMult = ((double) tempo / tickdiv) / 1000.0;
+                    printf("WAIT: %f\n", deltaTime * speedMult);
+                    Sleep(deltaTime * speedMult);
+                }
+            }
+            DWORD data = event->data[0] | event->data[1] << 8;
+            if (event->len == 3) {
+                data |= event->data[2] << 16;
             }
             if (midiOutShortMsg(this->device, data) != MMSYSERR_NOERROR) {
                 return Result::MIDI_OUT_ERR;
             }
-        } else {
-            // long msg playback
+        } else if (event->type == EventType::META) {
+            if (event->data[0] == 0x51) {
+                uint32_t data = (event->data[1] << 16) | (event->data[2] << 8) | event->data[3];
+                tempo = data;
+                printf("TEMPO: %i %i %i %i", event->data[1], event->data[2], event->data[3], data);
+            }
+            // long msg/sysex playback
         }
+        lastEvent = event;
     }
     return Result::SUCCESS;
 }
