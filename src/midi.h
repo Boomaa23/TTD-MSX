@@ -20,7 +20,6 @@ enum EventType {
 };
 
 struct TrackEvent {
-    uint8_t track;
     uint32_t trackTime;
     uint32_t deltaTime;
 

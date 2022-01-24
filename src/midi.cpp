@@ -115,14 +115,15 @@ Result MidiFile::ReadTracks() {
                 case 0xF0:
                 case 0xF7: {
                     // sysex event
-                    //TODO THIS DOES NOT WORK
+                    printf("FOUND SYSEX\n");
                     event.type = EventType::SYSEX;
-                    event.len = getc(this->file);
+                    VarLen sysexLen = ReadVariableLen(this->file);
+                    event.len = sysexLen.data;
                     event.data = new uint8_t[event.len];
-                    for (uint8_t i = 0; i < event.len; ++i) {
-                        event.data[i] = getc(this->file);
+                    if (fread(&event.data, 1, event.len, this->file) != 1) {
+                        return Result::FREAD_ERR;
                     }
-                    i += event.len;
+                    i += event.len + sysexLen.len;
                     break;
                 }
                 case 0xFF: {
@@ -228,6 +229,24 @@ Result MidiDevice::Queue(std::vector<Track>* data) {
         this->queue.insert(this->queue.end(), data->at(i).begin(), data->at(i).end());
     }
     std::sort(this->queue.begin(), this->queue.end(), TracktimeAsc);
+    
+    std::vector<TrackEvent> mergedQueue;
+	uint32_t lastTracktime = 0;
+	for (size_t i = 0; i < this->queue.size(); i++) {
+		TrackEvent &block = this->queue[i];
+        if (block.trackTime > lastTracktime || mergedQueue.size() == 0) {
+			mergedQueue.push_back(block);
+			lastTracktime = block.trackTime;
+		} else {
+            TrackEvent* lastBlock = &mergedQueue.back();
+            uint8_t* mergedData = new uint8_t[lastBlock->len + block.len];
+            std::memcpy(&mergedData, &lastBlock->data, lastBlock->len);
+            std::memcpy(&mergedData + lastBlock->len, &block.data, block.len);
+			lastBlock->data = mergedData;
+            lastBlock->len += block.len;
+		}
+	}
+	std::swap(mergedQueue, this->queue);
     return Result::SUCCESS;
 }
 
@@ -241,8 +260,11 @@ Result MidiDevice::Start(uint16_t tickdiv) {
                 uint32_t deltaTime = event->trackTime - lastEvent->trackTime;
                 if (deltaTime != 0) {
                     double speedMult = ((double) tempo / tickdiv) / 1000.0;
-                    printf("WAIT: %f\n", deltaTime * speedMult);
-                    Sleep(deltaTime * speedMult);
+                    // printf("WAIT: %f\n", deltaTime * speedMult);
+                    // Sleep(deltaTime * speedMult / 1.5);
+                    Sleep(speedMult);
+                } else {
+                    printf("DT0!!!!!!");
                 }
             }
             DWORD data = event->data[0] | event->data[1] << 8;
@@ -256,9 +278,18 @@ Result MidiDevice::Start(uint16_t tickdiv) {
             if (event->data[0] == 0x51) {
                 uint32_t data = (event->data[1] << 16) | (event->data[2] << 8) | event->data[3];
                 tempo = data;
-                printf("TEMPO: %i %i %i %i", event->data[1], event->data[2], event->data[3], data);
+                printf("TEMPO: %i %i %i %i\n", event->data[1], event->data[2], event->data[3], data);
             }
-            // long msg/sysex playback
+        } else if (event->type == EventType::SYSEX) {
+            MIDIHDR hdr;
+            hdr.lpData = (LPSTR) event->data;
+            hdr.dwBufferLength = hdr.dwBytesRecorded = event->len;
+            if (midiOutPrepareHeader(this->device, &hdr, hdr.dwBufferLength) != MMSYSERR_NOERROR) {
+                return Result::MIDI_HDR_ERR;
+            }
+            if (midiOutLongMsg(this->device, &hdr, hdr.dwBufferLength) != MMSYSERR_NOERROR) {
+                return Result::MIDI_OUT_ERR;
+            }
         }
         lastEvent = event;
     }

@@ -18,10 +18,8 @@ enum class Result {
     FILE_NOT_INIT,
 
     MIDI_OPEN_ERR,
-    MIDI_PROP_ERR,
     MIDI_OUT_ERR,
-    MIDI_HEAD_ERR,
-    MIDI_START_ERR,
     MIDI_CLOSE_ERR,
+    MIDI_HDR_ERR,
     MIDI_NOT_INIT,
 };
