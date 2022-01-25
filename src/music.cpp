@@ -4,7 +4,7 @@
 #include "midi.h"
 
 int main() {
-    MidiFile file = MidiFile("../openmsx/tttheme2.mid");
+    MidiFile file = MidiFile("../openmsx/busy_schedule.mid");
     std::cout << (uint32_t) file.OpenFile() << std::endl;
     std::cout << (uint32_t) file.ReadHeader() << std::endl;
     std::cout << (uint32_t) file.ReadTracks() << std::endl;
@@ -13,6 +13,7 @@ int main() {
 
     MidiDevice device = MidiDevice();
     device.Open();
+    device.Reset();
     std::cout <<(uint32_t)  device.Queue(file.GetTracks()) << std::endl;
     device.Start(file.GetHeader()->tickdiv);
     device.Close();

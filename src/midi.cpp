@@ -230,27 +230,30 @@ Result MidiDevice::Queue(std::vector<Track>* data) {
     }
     std::sort(this->queue.begin(), this->queue.end(), TracktimeAsc);
     
-    std::vector<TrackEvent> mergedQueue;
-	uint32_t lastTracktime = 0;
-	for (size_t i = 0; i < this->queue.size(); i++) {
-		TrackEvent &block = this->queue[i];
-        if (block.trackTime > lastTracktime || mergedQueue.size() == 0) {
-			mergedQueue.push_back(block);
-			lastTracktime = block.trackTime;
-		} else {
-            TrackEvent* lastBlock = &mergedQueue.back();
-            uint8_t* mergedData = new uint8_t[lastBlock->len + block.len];
-            std::memcpy(&mergedData, &lastBlock->data, lastBlock->len);
-            std::memcpy(&mergedData + lastBlock->len, &block.data, block.len);
-			lastBlock->data = mergedData;
-            lastBlock->len += block.len;
-		}
-	}
-	std::swap(mergedQueue, this->queue);
+    // std::vector<TrackEvent> mergedQueue;
+	// uint32_t lastTracktime = 0;
+	// for (size_t i = 0; i < this->queue.size(); i++) {
+	// 	TrackEvent &block = this->queue[i];
+    //     if (block.trackTime > lastTracktime || mergedQueue.size() == 0) {
+	// 		mergedQueue.push_back(block);
+	// 		lastTracktime = block.trackTime;
+	// 	} else {
+    //         TrackEvent* lastBlock = &mergedQueue.back();
+    //         uint8_t* mergedData = new uint8_t[lastBlock->len + block.len];
+    //         std::memcpy(mergedData, &lastBlock->data, lastBlock->len);
+    //         std::memcpy(mergedData + lastBlock->len, &block.data, block.len);
+	// 		lastBlock->data = mergedData;
+    //         lastBlock->len += block.len;
+	// 	}
+	// }
+	// std::swap(mergedQueue, this->queue);
     return Result::SUCCESS;
 }
 
 Result MidiDevice::Start(uint16_t tickdiv) {
+    // std::cout << (uint32_t) TransmitSysex(RESET_GM_SYSEX, sizeof(RESET_GM_SYSEX)) << std::endl;
+    // std::cout << (uint32_t) TransmitSysex(ROLAND_REVERB_SYSEX, sizeof(ROLAND_REVERB_SYSEX)) << std::endl;
+    Sleep(50);
     TrackEvent* lastEvent = NULL;
     uint32_t tempo = 500000;
     for (size_t i = 0; i < this->queue.size(); i++) {
@@ -261,10 +264,10 @@ Result MidiDevice::Start(uint16_t tickdiv) {
                 if (deltaTime != 0) {
                     double speedMult = ((double) tempo / tickdiv) / 1000.0;
                     // printf("WAIT: %f\n", deltaTime * speedMult);
-                    // Sleep(deltaTime * speedMult / 1.5);
-                    Sleep(speedMult);
+                    Sleep(deltaTime * speedMult / 1.1);
+                    // Sleep(speedMult);
                 } else {
-                    printf("DT0!!!!!!");
+                    // printf("DT0!!!!!!");
                 }
             }
             DWORD data = event->data[0] | event->data[1] << 8;
@@ -281,17 +284,29 @@ Result MidiDevice::Start(uint16_t tickdiv) {
                 printf("TEMPO: %i %i %i %i\n", event->data[1], event->data[2], event->data[3], data);
             }
         } else if (event->type == EventType::SYSEX) {
-            MIDIHDR hdr;
-            hdr.lpData = (LPSTR) event->data;
-            hdr.dwBufferLength = hdr.dwBytesRecorded = event->len;
-            if (midiOutPrepareHeader(this->device, &hdr, hdr.dwBufferLength) != MMSYSERR_NOERROR) {
-                return Result::MIDI_HDR_ERR;
-            }
-            if (midiOutLongMsg(this->device, &hdr, hdr.dwBufferLength) != MMSYSERR_NOERROR) {
-                return Result::MIDI_OUT_ERR;
+            Result retval = TransmitSysex(event->data, event->len);
+            if (retval != Result::SUCCESS) {
+                return retval;
             }
         }
         lastEvent = event;
+    }
+    return Result::SUCCESS;
+}
+
+Result MidiDevice::TransmitSysex(uint8_t* data, size_t length) {
+    const uint8_t e[] = { 0xF0, 0x41, 0x10, 0x42, 0x12, 0x40, 0x01, 0x30, 0x02, 0x04, 0x00, 0x40, 0x40, 0x00, 0x00, 0x09, 0xF7 };
+    MIDIHDR* hdr = (MIDIHDR*)calloc(1, sizeof(MIDIHDR));
+    hdr->lpData = reinterpret_cast<LPSTR>(const_cast<byte *>(e));
+    hdr->dwBufferLength = length;
+    MMRESULT i = midiOutPrepareHeader(this->device, hdr, sizeof(*hdr));
+    printf("HELLO, %i\n", i);
+    if (i != MMSYSERR_NOERROR) {
+        return Result::MIDI_HDR_ERR;
+    }
+    hdr->dwBytesRecorded = hdr->dwBufferLength;
+    if (midiOutLongMsg(this->device, hdr, sizeof(*hdr)) != MMSYSERR_NOERROR) {
+        return Result::MIDI_OUT_ERR;
     }
     return Result::SUCCESS;
 }
