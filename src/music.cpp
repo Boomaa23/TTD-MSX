@@ -4,7 +4,7 @@
 #include "midi.h"
 
 int main() {
-    MidiFile file = MidiFile("../openmsx/busy_schedule.mid");
+    MidiFile file = MidiFile("../openmsx/ultimate_run.mid");
     std::cout << (uint32_t) file.OpenFile() << std::endl;
     std::cout << (uint32_t) file.ReadHeader() << std::endl;
     std::cout << (uint32_t) file.ReadTracks() << std::endl;

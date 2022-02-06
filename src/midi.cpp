@@ -62,6 +62,7 @@ Result MidiFile::ReadHeader() {
     this->header->format = (buffer[8] << 8) | buffer[9];
     this->header->tracks = (buffer[10] << 8) | buffer[11];
     this->header->tickdiv = (buffer[12] << 8) | buffer[13];
+    printf("PPQN: %u \n", this->header->tickdiv);
     return Result::SUCCESS;
 }
 
@@ -229,68 +230,69 @@ Result MidiDevice::Queue(std::vector<Track>* data) {
         this->queue.insert(this->queue.end(), data->at(i).begin(), data->at(i).end());
     }
     std::sort(this->queue.begin(), this->queue.end(), TracktimeAsc);
-    
-    // std::vector<TrackEvent> mergedQueue;
-	// uint32_t lastTracktime = 0;
-	// for (size_t i = 0; i < this->queue.size(); i++) {
-	// 	TrackEvent &block = this->queue[i];
-    //     if (block.trackTime > lastTracktime || mergedQueue.size() == 0) {
-	// 		mergedQueue.push_back(block);
-	// 		lastTracktime = block.trackTime;
-	// 	} else {
-    //         TrackEvent* lastBlock = &mergedQueue.back();
-    //         uint8_t* mergedData = new uint8_t[lastBlock->len + block.len];
-    //         std::memcpy(mergedData, &lastBlock->data, lastBlock->len);
-    //         std::memcpy(mergedData + lastBlock->len, &block.data, block.len);
-	// 		lastBlock->data = mergedData;
-    //         lastBlock->len += block.len;
-	// 	}
-	// }
-	// std::swap(mergedQueue, this->queue);
     return Result::SUCCESS;
 }
 
-Result MidiDevice::Start(uint16_t tickdiv) {
-    // std::cout << (uint32_t) TransmitSysex(RESET_GM_SYSEX, sizeof(RESET_GM_SYSEX)) << std::endl;
-    // std::cout << (uint32_t) TransmitSysex(ROLAND_REVERB_SYSEX, sizeof(ROLAND_REVERB_SYSEX)) << std::endl;
-    Sleep(50);
-    TrackEvent* lastEvent = NULL;
-    uint32_t tempo = 500000;
-    for (size_t i = 0; i < this->queue.size(); i++) {
-        TrackEvent* event = &this->queue.at(i);
+void CALLBACK TimerCallback(UINT uTimerID, UINT, DWORD_PTR dwUser, DWORD_PTR, DWORD_PTR) {
+    MidiDevice* midi = reinterpret_cast<MidiDevice*>(dwUser);
+    
+    DWORD time = timeGetTime();
+    DWORD* startTime = &midi->startTime;
+    if (*startTime == -1) {
+        *startTime = time;
+    }
+    time -= *startTime;
+
+    while (midi->timerCtr < midi->queue.size()) {
+        TrackEvent* event = &midi->queue.at(midi->timerCtr);
+        double eventTime = event->trackTime * (double) midi->tempo / 1000.0 / (uint32_t) midi->tickdiv;
+        if (eventTime > time) {
+            break;
+        }
         if (event->type == EventType::MIDI) {
-            if (lastEvent != NULL) {
-                uint32_t deltaTime = event->trackTime - lastEvent->trackTime;
-                if (deltaTime != 0) {
-                    double speedMult = ((double) tempo / tickdiv) / 1000.0;
-                    // printf("WAIT: %f\n", deltaTime * speedMult);
-                    Sleep(deltaTime * speedMult / 1.1);
-                    // Sleep(speedMult);
-                } else {
-                    // printf("DT0!!!!!!");
-                }
-            }
             DWORD data = event->data[0] | event->data[1] << 8;
             if (event->len == 3) {
                 data |= event->data[2] << 16;
             }
-            if (midiOutShortMsg(this->device, data) != MMSYSERR_NOERROR) {
-                return Result::MIDI_OUT_ERR;
+            if (midiOutShortMsg(midi->device, data) != MMSYSERR_NOERROR) {
+                return;
             }
         } else if (event->type == EventType::META) {
             if (event->data[0] == 0x51) {
                 uint32_t data = (event->data[1] << 16) | (event->data[2] << 8) | event->data[3];
-                tempo = data;
-                printf("TEMPO: %i %i %i %i\n", event->data[1], event->data[2], event->data[3], data);
+                midi->tempo = data;
             }
         } else if (event->type == EventType::SYSEX) {
-            Result retval = TransmitSysex(event->data, event->len);
+            Result retval = midi->TransmitSysex(event->data, event->len);
             if (retval != Result::SUCCESS) {
-                return retval;
+                return;
             }
         }
-        lastEvent = event;
+        midi->timerCtr++;
     }
+    std::vector<TrackEvent>::iterator begin = midi->queue.begin();
+}
+
+Result MidiDevice::Start(uint16_t tickdiv) {
+    // std::cout << (uint32_t) TransmitSysex(RESET_GM_SYSEX, sizeof(RESET_GM_SYSEX)) << std::endl;
+    std::cout << (uint32_t) TransmitSysex(ROLAND_REVERB_SYSEX, sizeof(ROLAND_REVERB_SYSEX)) << std::endl;
+    this->tickdiv = tickdiv;
+    TIMECAPS timecaps;
+	if (timeGetDevCaps(&timecaps, sizeof(timecaps)) != MMSYSERR_NOERROR) {
+		return Result::MIDI_OPEN_ERR;
+	}
+    UINT timePeriod = 1;
+    timePeriod = std::min(std::max(timePeriod, timecaps.wPeriodMin), timecaps.wPeriodMax);
+    if (timeBeginPeriod(timePeriod) != MMSYSERR_NOERROR) {
+        return Result::MIDI_OPEN_ERR;
+    }
+    
+    this->startTime = timeGetTime();
+    timeSetEvent(timePeriod, timePeriod, TimerCallback, (DWORD_PTR)this, TIME_PERIODIC | TIME_CALLBACK_FUNCTION);
+    while (this->timerCtr < this->queue.size() - 1) {
+        Sleep(100);
+    }
+    
     return Result::SUCCESS;
 }
 
@@ -332,12 +334,4 @@ Result MidiDevice::Close() {
     }
     
     return Result::SUCCESS;
-}
-
-UINT MidiDevice::GetID() {
-    return this->id;
-}
-
-HMIDIOUT* MidiDevice::GetDevice() {
-    return &this->device;
 }

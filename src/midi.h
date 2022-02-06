@@ -63,13 +63,14 @@ public:
     Result Reset();
     Result Close();
 
-    uint32_t GetID();
-    HMIDIOUT* GetDevice();
+    Result TransmitSysex(uint8_t* data, size_t length);
 
-private:
     UINT id;
     HMIDIOUT device;
     std::vector<TrackEvent> queue;
+    DWORD startTime = -1;
 
-    Result TransmitSysex(uint8_t* data, size_t length);
+    uint16_t tickdiv = 1;
+    uint32_t timerCtr = 0;
+    double tempo = 500000;
 };
