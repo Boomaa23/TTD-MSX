@@ -274,8 +274,9 @@ void CALLBACK TimerCallback(UINT uTimerID, UINT, DWORD_PTR dwUser, DWORD_PTR, DW
 }
 
 Result MidiDevice::Start(uint16_t tickdiv) {
-    // std::cout << (uint32_t) TransmitSysex(RESET_GM_SYSEX, sizeof(RESET_GM_SYSEX)) << std::endl;
-    std::cout << (uint32_t) TransmitSysex(ROLAND_REVERB_SYSEX, sizeof(ROLAND_REVERB_SYSEX)) << std::endl;
+    TransmitSysex(RESET_GM_SYSEX, sizeof(RESET_GM_SYSEX));
+    TransmitSysex(ROLAND_REVERB_SYSEX, sizeof(ROLAND_REVERB_SYSEX));
+    
     this->tickdiv = tickdiv;
     TIMECAPS timecaps;
 	if (timeGetDevCaps(&timecaps, sizeof(timecaps)) != MMSYSERR_NOERROR) {
@@ -297,9 +298,8 @@ Result MidiDevice::Start(uint16_t tickdiv) {
 }
 
 Result MidiDevice::TransmitSysex(uint8_t* data, size_t length) {
-    const uint8_t e[] = { 0xF0, 0x41, 0x10, 0x42, 0x12, 0x40, 0x01, 0x30, 0x02, 0x04, 0x00, 0x40, 0x40, 0x00, 0x00, 0x09, 0xF7 };
     MIDIHDR* hdr = (MIDIHDR*)calloc(1, sizeof(MIDIHDR));
-    hdr->lpData = reinterpret_cast<LPSTR>(const_cast<byte *>(e));
+    hdr->lpData = reinterpret_cast<LPSTR>(data);
     hdr->dwBufferLength = length;
     MMRESULT i = midiOutPrepareHeader(this->device, hdr, sizeof(*hdr));
     printf("HELLO, %i\n", i);
